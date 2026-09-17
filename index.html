@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+    <style>
+        .board {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 4px;
+            width: 320px;
+            background: #cbd5e1;
+            padding: 4px;
+            border-radius: 8px;
+        }
+        .tile {
+            height: 75px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: #3b82f6;
+            color: white;
+            font-size: 24px;
+            font-weight: bold;
+            border-radius: 4px;
+            cursor: pointer;
+            user-select: none;
+        }
+        .empty {
+            background: transparent;
+            cursor: default;
+        }
+    </style>
+</head>
+<body>
+
+<div x-data="slidingPuzzle()" class="board">
+    <template x-for="(tile, index) in board" :key="index">
+        <div 
+            class="tile" 
+            :class="tile === 0 ? 'empty' : ''"
+            @click="move(index)"
+            x-text="tile === 0 ? '' : tile">
+        </div>
+    </template>
+    
+    <button @click="solve()" style="grid-column: span 4; margin-top: 10px;">
+        Solve with Knuth
+    </button>
+</div>
+
+<script>
+document.addEventListener('alpine:init', () => {
+    Alpine.data('slidingPuzzle', () => ({
+        // 0 represents the empty space
+        board: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 0],
+
+        move(index) {
+            const emptyIdx = this.board.indexOf(0);
+            const row = Math.floor(index / 4);
+            const emptyRow = Math.floor(emptyIdx / 4);
+            const col = index % 4;
+            const emptyCol = emptyIdx % 4;
+
+            // Check if adjacent (same row and adjacent col, OR same col and adjacent row)
+            const isAdjacent = (row === emptyRow && Math.abs(col - emptyCol) === 1) || 
+                               (col === emptyCol && Math.abs(row - emptyRow) === 1);
+
+            if (isAdjacent) {
+                // Swap the clicked tile with the empty space
+                this.board[emptyIdx] = this.board[index];
+                this.board[index] = 0;
+            }
+        },
+
+        async solve() {
+            // This is where you connect to the C backend.
+            // You will format this.board into the string format Knuth's code expects,
+            // send it via fetch() or a Wasm call, and then animate the returned steps.
+            console.log("Current state to send to backend:", this.board);
+        }
+    }))
+})
+</script>
+
+</body>
+</html>
