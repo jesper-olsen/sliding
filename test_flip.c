@@ -12,8 +12,9 @@ int main()
                 fprintf(stderr, "Failure on the first try!\n");
                 return -1;
         }
-        for(j = 1; j <= 133; j++)
+        for(j = 1; j <= 133; j++) {
                 gb_next_rand();
+        }
         if(gb_unif_rand(0x55555555L) != 748103812) {
                 fprintf(stderr, "Failure on the second try!\n");
                 return -2;

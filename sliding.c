@@ -1,26 +1,22 @@
-#define verbose Verbose
-#define bdry 999999
-#define obst 999998
-#define maxsize 256
-#define boardsize (maxsize*3+2)
-#define boardover() { \
-fprintf(stderr,"Sorry, I can't handle that large a board;\n") ; \
-fprintf(stderr," please recompile me with more maxsize.\n") ; \
-exit(-3) ; \
-}
-#define bufsize 1024
-#define cell(j,k) board[ul+(j) *colsp+k]
-#define hashsize (1<<13)
-#define hashcode(x) (uni[0][x&0xff]+uni[1][(x>>8) &0xff]+ \
-uni[2][(x>>16) &0xff]+uni[3][x>>24])
-#define memsize (1<<25)
-#define maxmoves 1000
+// https://www-cs-faculty.stanford.edu/~knuth/programs/sliding.w
+// https://en.wikipedia.org/wiki/15_puzzle
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <setjmp.h>
 #include "gb_flip.h"
-typedef unsigned int uint;
+
+constexpr int bdry = 999999;
+constexpr int obst = 999998;
+constexpr size_t maxsize = 256;
+constexpr size_t boardsize = maxsize * 3 + 2;
+constexpr size_t bufsize = 1024;
+#define cell(j,k) board[ul+(j) *colsp+k]
+constexpr size_t hashsize = 1 << 13;
+
+constexpr size_t memsize = 1 << 25;
+constexpr size_t maxmoves = 1000;
+
 jmp_buf success_point;
 int style;
 int verbose;
@@ -45,31 +41,31 @@ int place[maxsize], aplace[maxsize];
 int balance[16];
 
 char xboard[boardsize];
-uint config[maxsize / 8];
+uint32_t config[maxsize / 8];
 
 short uni[4][256];
-uint hash[hashsize];
-uint hashh[hashsize];
+uint32_t hash[hashsize];
+uint32_t hashh[hashsize];
 
-uint pos[memsize + maxsize / 8 + 1];
-uint cutoff;
-uint cutoffh;
-uint curpos;
-uint curposh;
-uint source;
-uint sourceh;
-uint nextsource, nextsourceh;
-uint maxpos;
-uint maxposh;
-uint configs;
-uint configsh;
-uint oldconfigs;
-uint milestone[maxmoves];
-uint milestoneh[maxmoves];
-uint shortcut;
+uint32_t pos[memsize + maxsize / 8 + 1];
+uint32_t cutoff;
+uint32_t cutoffh;
+uint32_t curpos;
+uint32_t curposh;
+uint32_t source;
+uint32_t sourceh;
+uint32_t nextsource, nextsourceh;
+uint32_t maxpos;
+uint32_t maxposh;
+uint32_t configs;
+uint32_t configsh;
+uint32_t oldconfigs;
+uint32_t milestone[maxmoves];
+uint32_t milestoneh[maxmoves];
+uint32_t shortcut;
 int goalhash;
-uint goal[maxsize / 8];
-uint start[maxsize / 8];
+uint32_t goal[maxsize / 8];
+uint32_t start[maxsize / 8];
 
 int head[maxsize + 1], out[maxsize + 1], in[maxsize + 1];
 int link[boardsize], olink[boardsize], ilink[boardsize];
@@ -78,6 +74,18 @@ int perm[maxsize + 1], iperm[maxsize + 1];
 char decision[maxsize];
 int inx[maxsize], lstart[maxsize];
 int super[maxsize];
+
+static inline void boardover(void)
+{
+        fprintf(stderr, "Sorry, I can't handle that large a board;\n") ;
+        fprintf(stderr, " please recompile me with more maxsize.\n") ;
+        exit(-3) ;
+}
+
+static int hashcode(unsigned int x)
+{
+        return uni[0][x & 0xff] + uni[1][(x >> 8) & 0xff] + uni[2][(x >> 16) & 0xff] + uni[3][x >> 24];
+}
 
 int fill_board(int board[], int piece[], int place[])
 {
@@ -144,7 +152,7 @@ int pack(int board[], int piece[])
         return i;
 }
 
-void print_config(uint config[], int n)
+void print_config(uint32_t config[], int n)
 {
         register int j, t;
         for(j = 0; j < n - 1; j++)printf("%08x", config[j]);
@@ -152,7 +160,7 @@ void print_config(uint config[], int n)
         printf("%0*x", j, t);
 }
 
-int unpack(int board[], int piece[], int place[], uint config[])
+int unpack(int board[], int piece[], int place[], uint32_t config[])
 {
         register int i, j, k, p, s, t;
         for(j = ul; j <= lr; j++)xboard[j] = 0;
@@ -171,12 +179,12 @@ int unpack(int board[], int piece[], int place[], uint config[])
         return i;
 }
 
-void print_big(uint hi, uint lo)
+void print_big(uint32_t hi, uint32_t lo)
 {
         printf("%.15g", ((double)hi) * 4294967296.0 + (double)lo);
 }
 
-void print_bigx(uint hi, uint lo)
+void print_bigx(uint32_t hi, uint32_t lo)
 {
         if(hi)printf("%x%08x", hi, lo);
         else printf("%x", lo);
@@ -588,7 +596,7 @@ restart:
                 if(configs == oldconfigs)exit(0);
                 if(verbose <= 0)printf(" and %d more.\n", configs - oldconfigs - 1);
         }
-        printf("No solution found yet (maxmoves=%d)!\n", maxmoves);
+        printf("No solution found yet (maxmoves=%zu)!\n", maxmoves);
         exit(0);
 
 hurray:

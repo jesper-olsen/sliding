@@ -1,4 +1,4 @@
-// GB_FLIP 
+// GB_FLIP
 // Lagged Fibonacci Generator (LFG).
 // Created by Donald E. Knuth for the Stanford GraphBase project
 
@@ -12,10 +12,12 @@ long*gb_fptr = A;
 long gb_flip_cycle()
 {
         register long*ii,*jj;
-        for(ii = &A[1], jj = &A[32]; jj <= &A[55]; ii++, jj++)
+        for(ii = &A[1], jj = &A[32]; jj <= &A[55]; ii++, jj++) {
                 *ii = mod_diff(*ii, *jj);
-        for(jj = &A[1]; ii <= &A[55]; ii++, jj++)
+        }
+        for(jj = &A[1]; ii <= &A[55]; ii++, jj++) {
                 *ii = mod_diff(*ii, *jj);
+        }
         gb_fptr = &A[54];
         return A[55];
 }
@@ -29,8 +31,11 @@ void gb_init_rand(long seed)
         for(i = 21; i; i = (i + 21) % 55) {
                 A[i] = next;
                 next = mod_diff(prev, next);
-                if(seed & 1)seed = 0x40000000+(seed >> 1);
-                else seed >>= 1;
+                if(seed & 1) {
+                        seed = 0x40000000+(seed >> 1);
+                } else {
+                        seed >>= 1;
+                }
                 next = mod_diff(next, seed);
                 prev = A[i];
         }
