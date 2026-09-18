@@ -2,7 +2,7 @@
 
 This repo holds the unpacked (ctangle'ed) c source for Knuth's [sliding](https://www-cs-faculty.stanford.edu/~knuth/programs/sliding.w) program.
 
-Additionally it adds a web UI for solving 8- and (15-puzzles)[https://en.wikipedia.org/wiki/15_puzzle] - a special case of the more general sliding puzzles the program can solve.
+Additionally it adds a web UI for solving 8- and [15-puzzles](https://en.wikipedia.org/wiki/15_puzzle) - a special case of the more general sliding puzzles the program can solve.
 The web UI is live [here](jesper-olsen.github.io/sliding/).
 
 
