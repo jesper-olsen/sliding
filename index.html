@@ -1,85 +1,256 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
-    <style>
-        .board {
-            display: grid;
-            grid-template-columns: repeat(4, 1fr);
-            gap: 4px;
-            width: 320px;
-            background: #cbd5e1;
-            padding: 4px;
-            border-radius: 8px;
-        }
-        .tile {
-            height: 75px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            background: #3b82f6;
-            color: white;
-            font-size: 24px;
-            font-weight: bold;
-            border-radius: 4px;
-            cursor: pointer;
-            user-select: none;
-        }
-        .empty {
-            background: transparent;
-            cursor: default;
-        }
-    </style>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sliding puzzle &mdash; Knuth's solver</title>
+<script src="sliding.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+<style>
+  :root {
+    --bg: #0f172a;
+    --panel: #1e293b;
+    --tile: #3b82f6;
+    --tile-done: #10b981;
+    --text: #e2e8f0;
+    --muted: #94a3b8;
+  }
+  body {
+    margin: 0; padding: 24px;
+    background: var(--bg); color: var(--text);
+    font: 14px/1.5 ui-sans-serif, system-ui, -apple-system, sans-serif;
+  }
+  main { max-width: 640px; margin: 0 auto; }
+  h1 { font-size: 18px; font-weight: 600; margin: 0 0 4px; }
+  .sub { color: var(--muted); margin: 0 0 20px; font-size: 13px; }
+  .board {
+    position: relative;
+    background: var(--panel);
+    border-radius: 10px;
+    margin: 0 0 16px;
+  }
+  .tile {
+    position: absolute;
+    top: 0; left: 0;
+    display: flex; align-items: center; justify-content: center;
+    background: var(--tile); color: #fff;
+    font-size: 22px; font-weight: 600;
+    border-radius: 6px;
+    cursor: pointer; user-select: none;
+    transition: transform .16s cubic-bezier(.4, 0, .2, 1), background .3s;
+  }
+  .tile.done { background: var(--tile-done); }
+  .tile.obstacle { background: #475569; cursor: default; }
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 10px; }
+  button {
+    background: #334155; color: var(--text); border: 0;
+    padding: 6px 12px; border-radius: 6px; cursor: pointer;
+    font: inherit;
+  }
+  button:hover:not(:disabled) { background: #475569; }
+  button:disabled { opacity: .4; cursor: not-allowed; }
+  button.primary { background: var(--tile); }
+  button.primary:hover:not(:disabled) { background: #2563eb; }
+  input[type=range] { width: 160px; accent-color: var(--tile); }
+  .status { color: var(--muted); font-size: 13px; min-height: 20px; }
+  .status.err { color: #f87171; }
+  .counter { color: var(--muted); font-variant-numeric: tabular-nums; min-width: 72px; }
+  label { color: var(--muted); }
+</style>
 </head>
 <body>
 
-<div x-data="slidingPuzzle()" class="board">
-    <template x-for="(tile, index) in board" :key="index">
-        <div 
-            class="tile" 
-            :class="tile === 0 ? 'empty' : ''"
-            @click="move(index)"
-            x-text="tile === 0 ? '' : tile">
-        </div>
+<main x-data="puzzle" x-init="boot()">
+
+  <h1>Sliding puzzle</h1>
+  <p class="sub">Breadth-first optimal solver &mdash; Knuth's <code>sliding</code>, compiled to WebAssembly.</p>
+
+  <div class="board" :style="boardStyle">
+    <template x-for="t in tiles" :key="t.v">
+      <div class="tile"
+           :class="{ done: board[t.i] === goal[t.i], obstacle: t.v === 255 }"
+           :style="tileStyle(t.i)"
+           @click="move(t.i)"
+           x-text="t.v === 255 ? '' : t.v"></div>
     </template>
-    
-    <button @click="solve()" style="grid-column: span 4; margin-top: 10px;">
-        Solve with Knuth
-    </button>
-</div>
+  </div>
+
+  <div class="row">
+    <button @click="setSize(3)" :disabled="cols === 3">3&times;3</button>
+    <button @click="setSize(4)" :disabled="cols === 4">4&times;4</button>
+    <button @click="reset()">Reset</button>
+    <label>shuffle <span x-text="shuffle"></span></label>
+    <input type="range" min="1" :max="cols === 3 ? 60 : 30" x-model.number="shuffle">
+    <button @click="doShuffle()">Shuffle</button>
+  </div>
+
+  <div class="row">
+    <button class="primary" @click="solve()" :disabled="!ready || busy" x-text="busy ? 'Solving…' : 'Solve'"></button>
+    <template x-if="path">
+      <span class="row" style="margin:0">
+        <button @click="step(-1)" :disabled="idx === 0">&larr;</button>
+        <button @click="playing ? stop() : play()" x-text="playing ? 'Pause' : 'Play'"></button>
+        <button @click="step(1)" :disabled="idx === path.length - 1">&rarr;</button>
+        <span class="counter" x-text="idx + ' / ' + (path.length - 1)"></span>
+      </span>
+    </template>
+  </div>
+
+  <p class="status" :class="{ err: error }" x-text="status"></p>
+
+</main>
 
 <script>
 document.addEventListener('alpine:init', () => {
-    Alpine.data('slidingPuzzle', () => ({
-        // 0 represents the empty space
-        board: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 0],
+  Alpine.data('puzzle', () => ({
+    mod: null, ready: false, busy: false,
+    rows: 4, cols: 4,
+    board: [],
+    path: null, idx: 0, playing: false, timer: null,
+    shuffle: 12,
+    status: 'Loading solver…', error: false,
 
-        move(index) {
-            const emptyIdx = this.board.indexOf(0);
-            const row = Math.floor(index / 4);
-            const emptyRow = Math.floor(emptyIdx / 4);
-            const col = index % 4;
-            const emptyCol = emptyIdx % 4;
+    /* ---- geometry ---- */
+    get n()         { return this.rows * this.cols },
+    get gap()       { return 8 },
+    get size()      { return this.cols === 3 ? 96 : 74 },
+    get boardStyle() {
+      const s = this.size, g = this.gap;
+      return `width:${this.cols * (s + g) + g}px;height:${this.rows * (s + g) + g}px`;
+    },
+    tileStyle(i) {
+      const s = this.size, g = this.gap;
+      const r = Math.floor(i / this.cols), c = i % this.cols;
+      return `width:${s}px;height:${s}px;transform:translate(${g + c * (s + g)}px,${g + r * (s + g)}px)`;
+    },
 
-            // Check if adjacent (same row and adjacent col, OR same col and adjacent row)
-            const isAdjacent = (row === emptyRow && Math.abs(col - emptyCol) === 1) || 
-                               (col === emptyCol && Math.abs(row - emptyRow) === 1);
+    /* ---- state ---- */
+    get goal()   { return Array.from({ length: this.n }, (_, i) => (i + 1) % this.n) },
+    get tiles()  { return this.board.map((v, i) => ({ v, i })).filter(t => t.v !== 0) },
+    get solved() { return this.board.every((v, i) => v === this.goal[i]) },
 
-            if (isAdjacent) {
-                // Swap the clicked tile with the empty space
-                this.board[emptyIdx] = this.board[index];
-                this.board[index] = 0;
-            }
-        },
+    /* Depth the arena can actually reach: 4x4 dies just past 20 with
+       MEMBITS=24; 3x3 is bounded by its diameter of 31 anyway. */
+    get maxDepth() { return this.cols === 3 ? 31 : 20 },
 
-        async solve() {
-            // This is where you connect to the C backend.
-            // You will format this.board into the string format Knuth's code expects,
-            // send it via fetch() or a Wasm call, and then animate the returned steps.
-            console.log("Current state to send to backend:", this.board);
+    async boot() {
+      this.board = this.goal;
+      try {
+        this.mod = await createSlidingModule({ print: () => {}, printErr: () => {} });
+        this.ready = true;
+        this.status = 'Ready.';
+      } catch (e) {
+        this.error = true;
+        this.status = 'Could not load sliding.wasm — run `make wasm` and serve over http://, not file://';
+      }
+    },
+
+    setSize(c)   { this.cols = this.rows = c; this.reset() },
+    reset()      { this.dropPath(); this.board = this.goal; this.status = 'Ready.'; this.error = false },
+    dropPath()   { this.stop(); this.path = null; this.idx = 0 },
+
+    move(i) {
+      if (this.busy) return;
+      const z = this.board.indexOf(0);
+      const dr = Math.abs(Math.floor(i / this.cols) - Math.floor(z / this.cols));
+      const dc = Math.abs((i % this.cols) - (z % this.cols));
+      if (dr + dc !== 1) return;
+      const b = this.board.slice();
+      b[z] = b[i]; b[i] = 0;
+      this.board = b;
+      this.dropPath();
+      this.status = this.solved ? 'Solved.' : '';
+      this.error = false;
+    },
+
+    /* Random walk from the goal. Note the walk length is an upper bound on
+       the distance, not the distance: a 30-move walk usually lands well
+       under 20 because it doubles back on itself. */
+    doShuffle() {
+      this.dropPath();
+      let b = this.goal, z = b.indexOf(0), prev = -1;
+      for (let k = 0; k < this.shuffle; k++) {
+        const r = Math.floor(z / this.cols), c = z % this.cols, cand = [];
+        for (const [dr, dc] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+          const rr = r + dr, cc = c + dc;
+          if (rr < 0 || rr >= this.rows || cc < 0 || cc >= this.cols) continue;
+          const t = rr * this.cols + cc;
+          if (t !== prev) cand.push(t);
         }
-    }))
+        const t = cand[Math.floor(Math.random() * cand.length)];
+        b = b.slice(); b[z] = b[t]; b[t] = 0;
+        prev = z; z = t;
+      }
+      this.board = b;
+      this.status = '';
+      this.error = false;
+    },
+
+    /* The text format Knuth's reader expects. */
+    spec() {
+      const hex = '0123456789abcdef';
+      const defs = [];
+      for (let v = 1; v < this.n; v++) defs.push(hex[v] + ' = 1');
+      const enc = a => a.map(v => hex[v]).join('');
+      return `${this.rows} x ${this.cols}\n${defs.join('\n')}\n${enc(this.board)}\n${enc(this.goal)}\n`;
+    },
+
+    async solve() {
+      if (!this.ready || this.busy) return;
+      if (this.solved) { this.status = 'Already solved.'; return }
+      this.dropPath();
+      this.busy = true;
+      this.error = false;
+      this.status = 'Searching…';
+      /* The solver blocks the thread; yield one frame so the label paints. */
+      await new Promise(r => requestAnimationFrame(() => setTimeout(r, 0)));
+
+      const m = this.mod, t0 = performance.now();
+      const d = m.ccall('sliding_solve', 'number',
+                        ['string', 'number', 'number', 'number'],
+                        [this.spec(), 0, -1, this.maxDepth]);
+      const ms = Math.round(performance.now() - t0);
+
+      if (d < 0) {
+        this.error = true;
+        this.status = `${m.ccall('sliding_message', 'string', [], [])} (gave up after ${ms} ms)`;
+        this.busy = false;
+        return;
+      }
+
+      const n = m.ccall('sliding_rows', 'number', [], []) *
+                m.ccall('sliding_cols', 'number', [], []);
+      const base = m.ccall('sliding_path', 'number', [], []);
+      const heap = m.HEAPU8, p = [];
+      for (let i = 0; i <= d; i++) p.push(Array.from(heap.subarray(base + i * n, base + (i + 1) * n)));
+
+      this.path = p;
+      this.idx = 0;
+      this.board = p[0];
+      this.status = `${d} moves (optimal), found in ${ms} ms.`;
+      this.busy = false;
+    },
+
+    go(i) {
+      if (!this.path) return;
+      this.idx = Math.max(0, Math.min(this.path.length - 1, i));
+      this.board = this.path[this.idx];
+    },
+    step(d) { this.stop(); this.go(this.idx + d) },
+    play() {
+      if (!this.path) return;
+      if (this.idx >= this.path.length - 1) this.go(0);
+      this.playing = true;
+      this.timer = setInterval(() => {
+        if (this.idx >= this.path.length - 1) { this.stop(); return }
+        this.go(this.idx + 1);
+      }, 240);
+    },
+    stop() {
+      this.playing = false;
+      if (this.timer) { clearInterval(this.timer); this.timer = null }
+    },
+  }))
 })
 </script>
 

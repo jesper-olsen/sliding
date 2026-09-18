@@ -3,8 +3,23 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
+#include <stdint.h>
 #include <setjmp.h>
 #include "gb_flip.h"
+#include "sliding.h"
+
+/* Tunables.  HASHBITS was 13 in the unpacked source, which makes the hash
+   chains thousands deep once a level holds millions of configurations;
+   22 costs 32MB and is about 10x faster on 4x4 puzzles.  MEMBITS sizes the
+   configuration arena: it holds roughly 2^MEMBITS/4 configurations, i.e. the
+   three deepest levels of the search must fit in that. */
+#ifndef HASHBITS
+#define HASHBITS 22
+#endif
+#ifndef MEMBITS
+#define MEMBITS 25
+#endif
 
 constexpr int bdry = 999999;
 constexpr int obst = 999998;
@@ -12,14 +27,45 @@ constexpr size_t maxsize = 256;
 constexpr size_t boardsize = maxsize * 3 + 2;
 constexpr size_t bufsize = 1024;
 #define cell(j,k) board[ul+(j) *colsp+k]
-constexpr size_t hashsize = 1 << 13;
+constexpr size_t hashsize = (size_t)1 << HASHBITS;
 
-constexpr size_t memsize = 1 << 25;
+constexpr size_t memsize = (size_t)1 << MEMBITS;
 constexpr size_t maxmoves = 1000;
 
 jmp_buf success_point;
 int style;
 int verbose;
+
+/* --- non-local exit, replacing Knuth's exit() calls ------------------------ */
+static jmp_buf fail_point;
+static int fail_code;
+static char fail_msg[256];
+
+#define bail(code, ...) do { \
+                snprintf(fail_msg, sizeof fail_msg, __VA_ARGS__); \
+                fail_code = (code); \
+                longjmp(fail_point, 1); \
+        } while(0)
+
+/* --- the puzzle specification is read from memory, not stdin -------------- */
+static const char *specp;
+
+static int spec_line(char *b)
+{
+        register char *q;
+        register size_t n;
+        if(!specp || !*specp)return 0;
+        for(n = 0, q = b; *specp && *specp != '\n' && n < bufsize - 2; n++)*q++ = *specp++;
+        while(*specp && *specp != '\n')specp++;
+        if(*specp == '\n')specp++;
+        *q++ = '\n', *q = '\0';
+        return 1;
+}
+
+/* --- the solution, recorded level by level -------------------------------- */
+static uint8_t path[(maxmoves + 1) * maxsize];
+static int path_moves;
+static int depth_limit;
 
 int board[boardsize];
 int aboard[boardsize];
@@ -77,9 +123,7 @@ int super[maxsize];
 
 static inline void boardover(void)
 {
-        fprintf(stderr, "Sorry, I can't handle that large a board;\n") ;
-        fprintf(stderr, " please recompile me with more maxsize.\n") ;
-        exit(-3) ;
+        bail(SL_ERR_BOARD, "board too large; recompile with a larger maxsize");
 }
 
 static int hashcode(unsigned int x)
@@ -115,6 +159,18 @@ int fill_board(int board[], int piece[], int place[])
         }
         for(; j <= lr; j++)if(board[j] < 0)board[j] = 0;
         return c;
+}
+
+/* Snapshot one level of the solution as rows*cols bytes of piece types. */
+static void record(int level, int b[], int pc[])
+{
+        register int j, k, c;
+        register uint8_t *q = &path[level * rows * cols];
+        for(j = 0; j < rows; j++)
+                for(k = 0; k < cols; k++) {
+                        c = b[ul + j * colsp + k];
+                        *q++ = c >= obst ? SL_OBSTACLE : (uint8_t)(c ? pc[c] : 0);
+                }
 }
 
 void print_board(int board[], int piece[])
@@ -224,7 +280,7 @@ newguy:
         for(k = 0; k < n; k++)pos[j + 2 + k] = config[k];
         hash[h] = curpos, hashh[h] = curposh;
 
-        if(configs == oldconfigs || verbose > 0) {
+        if(verbose >= 0 && (configs == oldconfigs || verbose > 0)) {
                 print_config(config, n);
                 if(verbose > 0) {
                         printf(" (");
@@ -245,8 +301,8 @@ newguy:
         if(curposh == maxposh) {
                 if(curpos <= maxpos)goto okay;
         } else if(curposh < maxposh)goto okay;
-        fprintf(stderr, "Sorry, my memsize isn't big enough for this puzzle.\n");
-        exit(-13);
+        bail(SL_ERR_MEM, "search outgrew memsize (2^%d words); "
+             "the puzzle is too deep for this build", MEMBITS);
 okay:
         if(h == goalhash) {
                 for(k = 0; k < n; k++)if(config[k] != goal[k])goto not_yet;
@@ -400,27 +456,17 @@ illegal:
         }
 }
 
-int main(int argc, char*argv[])
+static void run(void)
 {
         register int j, t, k;
         volatile int d;
 
-        if(!(argc >= 2 && sscanf(argv[1], "%d", &style) == 1 &&
-                        (argc == 2 || sscanf(argv[2], "%d", &verbose) == 1))) {
-                fprintf(stderr, "Usage: %s style [verbose]\n", argv[0]);
-                exit(-1);
-        }
-        if(style < 0 || style > 5) {
-                fprintf(stderr,
-                        "Sorry, the style should be between 0 and 5, not %d!\n", style);
-                exit(-2);
-        }
+        if(style < 0 || style > 5)
+                bail(SL_ERR_STYLE, "style should be between 0 and 5, not %d", style);
 
-        fgets(buf, bufsize, stdin);
-        if(sscanf(buf, "%d x %d", &rows, &cols) != 2 || rows <= 0 || cols <= 0) {
-                fprintf(stderr, "Bad specification of rows x cols!\n");
-                exit(-6);
-        }
+        if(!spec_line(buf) ||
+                        sscanf(buf, "%d x %d", &rows, &cols) != 2 || rows <= 0 || cols <= 0)
+                bail(SL_ERR_SPEC, "bad specification of rows x cols");
         if(rows * cols > maxsize)boardover();
         colsp = cols + 1;
         delta[2] = colsp, delta[3] = -colsp;
@@ -429,7 +475,7 @@ int main(int argc, char*argv[])
 
         for(j = 1; j < 16; j++)offstart[j] = -1;
         while(1) {
-                if(!fgets(buf, bufsize, stdin)) {
+                if(!spec_line(buf)) {
                         buf[0] = '\n';
                         break;
                 }
@@ -437,10 +483,7 @@ int main(int argc, char*argv[])
                 if(buf[1] != ' ' || buf[2] != '=' || buf[3] != ' ')break;
                 if(buf[0] >= '1' && buf[0] <= '9')t = buf[0] - '0';
                 else if(buf[0] >= 'a' && buf[0] <= 'f')t = buf[0] - ('a' - 10);
-                else {
-                        printf("Bad piece name (%c)!\n", buf[0]);
-                        exit(-7);
-                }
+                else bail(SL_ERR_SPEC, "bad piece name (%c)", buf[0]);
                 if(offstart[t] >= 0)
                         printf("Warning: Redefinition of piece %c is being ignored.\n", buf[0]);
                 else {
@@ -458,15 +501,11 @@ int main(int argc, char*argv[])
                                         case'\n':
                                                 goto offsets_done;
                                         default:
-                                                fprintf(stderr,
-                                                        "Bad character `%c' in definition of piece %c!\n", *p, buf[0]);
-                                                exit(-4);
+                                                bail(SL_ERR_SPEC,
+                                                     "bad character `%c' in definition of piece %c", *p, buf[0]);
                                         }
 offsets_done:
-                                if(t < 0) {
-                                        fprintf(stderr, "Piece %c is empty!\n", buf[0]);
-                                        exit(-5);
-                                }
+                                if(t < 0)bail(SL_ERR_SPEC, "piece %c is empty", buf[0]);
                                 off[curo++] = 0;
                                 if(curo >= maxsize)boardover();
                         }
@@ -475,55 +514,45 @@ offsets_done:
         }
 
         t = fill_board(board, piece, place);
-        printf("Starting configuration:\n");
-        print_board(board, piece);
-        if(t) {
-                if(t > 0)
-                        if(t == 1)fprintf(stderr, "Oops, you filled a cell twice!\n");
-                        else fprintf(stderr, "Oops, you overfilled %d cells!\n", t);
-                else fprintf(stderr, "Oops, %s!\n",
-                                     t == -1 ? "your board wasn't big enough" :
-                                     "the configuration contains an illegal character");
-                exit(-8);
+        if(verbose >= 0) {
+                printf("Starting configuration:\n");
+                print_board(board, piece);
         }
-        if(bcount == 0) {
-                fprintf(stderr, "The puzzle doesn't have any pieces!\n");
-                exit(-9);
-        }
-        fgets(buf, bufsize, stdin);
+        if(t)bail(SL_ERR_SPEC, "starting configuration: %s",
+                          t == 1 ? "a cell was filled twice" :
+                          t > 0 ? "cells were filled twice" :
+                          t == -1 ? "the board wasn't big enough" :
+                          "illegal character in the configuration");
+        if(bcount == 0)bail(SL_ERR_SPEC, "the puzzle doesn't have any pieces");
+        if(!spec_line(buf))bail(SL_ERR_SPEC, "missing stopping configuration");
         t = fill_board(aboard, apiece, aplace);
-        printf("\nStopping configuration:\n");
-        print_board(aboard, apiece);
-        if(t) {
-                if(t > 0)
-                        if(t == 1)fprintf(stderr, "Oops, you filled a cell twice!\n");
-                        else fprintf(stderr, "Oops, you overfilled %d cells!\n", t);
-                else fprintf(stderr, "Oops, %s!\n",
-                                     t == -1 ? "your board wasn't big enough" :
-                                     "the configuration contains an illegal character");
-                exit(-10);
+        if(verbose >= 0) {
+                printf("\nStopping configuration:\n");
+                print_board(aboard, apiece);
         }
+        if(t)bail(SL_ERR_SPEC, "stopping configuration: %s",
+                          t == 1 ? "a cell was filled twice" :
+                          t > 0 ? "cells were filled twice" :
+                          t == -1 ? "the board wasn't big enough" :
+                          "illegal character in the configuration");
         for(j = 0; j < 16; j++)balance[j] = 0;
         for(j = ul; j <= lr; j++) {
-                if((board[j] < obst) != (aboard[j] < obst)) {
-                        fprintf(stderr, "The dead cells (x's) are in different places!\n");
-                        exit(-11);
-                }
+                if((board[j] < obst) != (aboard[j] < obst))
+                        bail(SL_ERR_SPEC, "the dead cells (x's) are in different places");
                 if(board[j] < obst)
                         balance[piece[board[j]]]++, balance[apiece[aboard[j]]]--;
         }
-        for(j = 0; j < 16; j++)if(balance[j]) {
-                        fprintf(stderr, "Wrong number of pieces in the stopping configuration!\n");
-                        exit(-12);
-                }
+        for(j = 0; j < 16; j++)if(balance[j])
+                        bail(SL_ERR_SPEC, "wrong number of pieces in the stopping configuration");
 
         gb_init_rand(0);
         for(j = 0; j < 4; j++)for(k = 1; k < 256; k++)uni[j][k] = gb_next_rand();
 
         if(setjmp(success_point))goto hurray;
 
-        printf("\n(using moves of style %d)\n", style);
+        if(verbose >= 0)printf("\n(using moves of style %d)\n", style);
 
+        record(0, board, piece);
         t = pack(board, piece);
         for(k = 0; k < t; k++)start[k] = config[k];
 
@@ -535,12 +564,14 @@ restart:
         curpos = cutoff = milestone[0] = 1, curposh = cutoffh = milestoneh[0] = 0;
         source = sourceh = configs = configsh = oldconfigs = d = 0;
         maxposh = 1;
-        printf("*** Distance 0:\n");
+        if(verbose >= 0)printf("*** Distance 0:\n");
         hashin(0);
-        if(verbose <= 0)printf(".\n");
+        if(verbose == 0)printf(".\n");
 
         for(d = 1; d < maxmoves; d++) {
-                printf("*** Distance %d:\n", d);
+                if(depth_limit > 0 && d > depth_limit)
+                        bail(SL_ERR_DEPTH, "no solution within %d moves", depth_limit);
+                if(verbose >= 0)printf("*** Distance %d:\n", d);
                 milestone[d] = curpos, milestoneh[d] = curposh;
                 oldconfigs = configs;
                 if(d > 1)cutoff = milestone[d - 2], cutoffh = milestoneh[d - 2];
@@ -593,19 +624,18 @@ restart:
                         }
                 }
 
-                if(configs == oldconfigs)exit(0);
-                if(verbose <= 0)printf(" and %d more.\n", configs - oldconfigs - 1);
+                if(configs == oldconfigs)
+                        bail(SL_ERR_UNSOLVED, "no solution: the reachable state space "
+                             "was exhausted at distance %d", d);
+                if(verbose == 0)printf(" and %d more.\n", configs - oldconfigs - 1);
         }
-        printf("No solution found yet (maxmoves=%zu)!\n", maxmoves);
-        exit(0);
+        bail(SL_ERR_DEPTH, "no solution within maxmoves=%zu", maxmoves);
 
 hurray:
-        if(d == 0) {
-                printf("\nYou're joking: That puzzle is solved in zero moves!\n");
-                exit(0);
-        }
-        printf("... Solution!\n");
-        if(verbose < 0)exit(0);
+        if(verbose >= 0)printf("... Solution!\n");
+        if(path_moves < 0)path_moves = d;
+        if(d == 0)fail_code = SL_OK, longjmp(fail_point, 1);
+        record(d, board, piece);
 
         if(curposh || curpos > memsize) {
                 maxpos = curpos - memsize;
@@ -614,19 +644,108 @@ hurray:
         for(j = 0; j <= lr + colsp; j++)aboard[j] = board[j];
         while(sourceh > maxposh || (sourceh == maxposh && source >= maxpos)) {
                 d--;
-                if(d == 0)exit(0);
-                printf("\n%d:\n", d);
+                if(d == 0)fail_code = SL_OK, longjmp(fail_point, 1);
                 k = source & (memsize - 1);
                 unpack(aboard, apiece, aplace, &pos[k + 2]);
-                print_board(aboard, apiece);
+                record(d, aboard, apiece);
+                if(verbose >= 0) {
+                        printf("\n%d:\n", d);
+                        print_board(aboard, apiece);
+                }
                 if(source < pos[k + 1])sourceh--;
                 source = source - pos[k + 1];
         }
 
-        printf("(Unfortunately I've forgotten how to get to level %d,\n", d);
-        printf(" so I'll have to reconstruct that part. Please bear with me.)\n");
+        if(verbose >= 0) {
+                printf("(Unfortunately I've forgotten how to get to level %d,\n", d);
+                printf(" so I'll have to reconstruct that part. Please bear with me.)\n");
+        }
         for(j = 0; j < hashsize; j++)hash[j] = hashh[j] = 0;
         unpack(board, piece, place, start);
         goto restart;
 }
 
+/* ------------------------------------------------------------------------ */
+/* Public interface                                                          */
+/* ------------------------------------------------------------------------ */
+
+int sliding_solve(const char *spec, int style_, int verbose_, int maxdepth)
+{
+        register size_t j;
+
+        style = style_, verbose = verbose_;
+        depth_limit = maxdepth;
+        specp = spec;
+        path_moves = -1;
+        fail_code = SL_OK;
+        fail_msg[0] = '\0';
+        curo = bcount = 0;
+        rows = cols = 0;
+        for(j = 0; j < hashsize; j++)hash[j] = hashh[j] = 0;
+
+        if(!setjmp(fail_point))run();
+        if(fail_code != SL_OK)return fail_code;
+        if(path_moves < 0)path_moves = 0;      /* already solved */
+        return path_moves;
+}
+
+int sliding_moves(void)
+{
+        return path_moves < 0 ? 0 : path_moves;
+}
+
+int sliding_rows(void)
+{
+        return rows;
+}
+
+int sliding_cols(void)
+{
+        return cols;
+}
+
+const uint8_t *sliding_path(void)
+{
+        return path;
+}
+
+const char *sliding_message(void)
+{
+        return fail_msg;
+}
+
+#ifndef SLIDING_NO_MAIN
+int main(int argc, char *argv[])
+{
+        int st, vb = 0, rc;
+        size_t n = 0, cap = 1 << 16;
+        char *spec;
+
+        if(!(argc >= 2 && sscanf(argv[1], "%d", &st) == 1 &&
+                        (argc == 2 || sscanf(argv[2], "%d", &vb) == 1))) {
+                fprintf(stderr, "Usage: %s style [verbose]\n", argv[0]);
+                return 1;
+        }
+
+        spec = malloc(cap);
+        if(!spec)return 1;
+        for(;;) {
+                size_t got = fread(spec + n, 1, cap - n - 1, stdin);
+                n += got;
+                if(n + 1 < cap)break;
+                cap *= 2;
+                spec = realloc(spec, cap);
+                if(!spec)return 1;
+        }
+        spec[n] = '\0';
+
+        rc = sliding_solve(spec, st, vb, 0);
+        free(spec);
+        if(rc < 0) {
+                fprintf(stderr, "%s!\n", sliding_message());
+                return -rc;
+        }
+        printf("\nSolved in %d moves.\n", rc);
+        return 0;
+}
+#endif
